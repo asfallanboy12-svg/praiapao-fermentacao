@@ -42,6 +42,15 @@ const buildTempSeries = (schedule, simEnd, interval) => {
 };
 
 const rateFactor = (temp, k = K_TEMP_DEFAULT) => Math.exp(k * (temp - T_REF));
+// aceita "3,6" ou "3.6"
+const toNumber = (v) => {
+  if (v === null || v === undefined) return NaN;
+  const s = String(v).replace(',', '.').trim();
+  if (s === '') return NaN;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+};
+
 
 /** ========= COMPONENTE ========= **/
 export default function App() {
@@ -153,15 +162,31 @@ export default function App() {
     ]);
   };
   const removeBatch = (id) => setBatches(batches.filter((b) => b.id !== id));
-  const updateBatch = (id, field, value) =>
-    setBatches((prev) => prev.map((b) => (b.id === id ? { ...b, [field]: value } : b)));
+ const updateBatch = (id, field, value) =>
+  setBatches((prev) => prev.map((b) => {
+    if (b.id !== id) return b;
+    if (field === 'ferment_pct') {
+      const n = toNumber(value);
+      return { ...b, ferment_pct: Number.isNaN(n) ? (value === '' ? '' : b.ferment_pct) : n };
+    }
+    return { ...b, [field]: value };
+  }));
 
   /** ---- Handlers: Produtos ---- **/
   const updateProductField = (key, field, value) => {
-    setProducts((prev) => ({
-      ...prev,
-      [key]: { ...prev[key], [field]: value }
-    }));
+  setProducts((prev) => {
+    const current = prev[key]?.[field];
+    let v = value;
+    if (['ideal_ref_min','ferment_ref_pct','k_temp','corr'].includes(field)) {
+      const n = toNumber(value);
+      if (!Number.isNaN(n)) v = n;           // salva número válido
+      else if (value === '') v = '';          // permite limpar o campo
+      else v = current ?? '';                 // evita gravar NaN
+    }
+    return { ...prev, [key]: { ...prev[key], [field]: v } };
+  });
+};
+
   };
   const exportProducts = () => {
     const blob = new Blob([JSON.stringify(products, null, 2)], { type: "application/json" });
