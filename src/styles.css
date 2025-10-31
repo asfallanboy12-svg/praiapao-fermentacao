@@ -1,0 +1,7 @@
+body { background: #0b1020; color: #e6eef8; font-family: Inter, Roboto, sans-serif; margin:0; }
+input, select, button { font-family: inherit; }
+.table { width:100%; border-collapse: collapse; }
+.table th, .table td { padding:8px; }
+.btn { cursor:pointer; }
+.card { background: #0f1724; border-radius:10px; padding:12px; box-shadow: 0 6px 18px rgba(2,6,23,0.6); }
+.small { font-size:0.9rem; color:#9fb0c8 }
