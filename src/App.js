@@ -114,6 +114,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("pp_products_v1", JSON.stringify(products));
   }, [products]);
+  }
 
   /** ---- Cronograma / Config (persistência) ---- **/
   const [tempSchedule, setTempSchedule] = useState(() => {
