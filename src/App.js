@@ -54,11 +54,13 @@ const buildTempSeries = (schedule, simEnd, intervalMin) => {
 const rateFactor = (temp, product) => {
   const q10 = Number(product?.q10 ?? 0);
   if (q10 && q10 > 0) {
+    // A cada +10°C, a velocidade multiplica por Q10
     return Math.pow(q10, (temp - T_REF) / 10);
   }
   const k = Number(product?.k_temp ?? K_TEMP_DEFAULT);
   return Math.exp(k * (temp - T_REF));
 };
+
 
 /* ================== INCREMENTOS / ACÚMULOS ================== */
 const eqIncrement = (intervalMin, temp, product, ferment_pct) => {
