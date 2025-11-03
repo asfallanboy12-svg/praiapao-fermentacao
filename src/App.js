@@ -133,18 +133,38 @@ export default function App() {
 
   /** ---- Lotes (persistência) ---- **/
   const [batches, setBatches] = useState(() => {
-    const b = localStorage.getItem("pp_batches_v1");
-    if (b) { try { return JSON.parse(b); } catch {} }
-    return [
-      { id: 1, name: "Massa 1", start: "00:00", productKey: "forma",      ferment_pct: 2.0, target_ready: "" },
-      { id: 2, name: "Massa 2", start: "00:30", productKey: "hamburguer", ferment_pct: 2.0, target_ready: "" },
-      { id: 3, name: "Massa 3", start: "01:00", productKey: "hotdog",     ferment_pct: 3.6, target_ready: "" },
-      { id: 4, name: "Massa 4", start: "01:30", productKey: "sovado",     ferment_pct: 2.0, target_ready: "" },
-      { id: 5, name: "Massa 5", start: "02:00", productKey: "cara",       ferment_pct: 2.0, target_ready: "" },
-      { id: 6, name: "Massa 6", start: "02:30", productKey: "minicara",   ferment_pct: 2.0, target_ready: "" }
-    ];
+  const b = localStorage.getItem("pp_batches_v1");
+  if (b) try { return JSON.parse(b); } catch {}
+  return [
+    { id: 1, name: "Massa 1", start: "00:00", productKey: "forma", ferment_pct: 2.0, target_ready: "" },
+    { id: 2, name: "Massa 2", start: "00:30", productKey: "hamburguer", ferment_pct: 2.0, target_ready: "" },
+    { id: 3, name: "Massa 3", start: "01:00", productKey: "hotdog", ferment_pct: 3.6, target_ready: "" },
+    { id: 4, name: "Massa 4", start: "01:30", productKey: "sovado", ferment_pct: 2.0, target_ready: "" },
+    { id: 5, name: "Massa 5", start: "02:00", productKey: "cara", ferment_pct: 2.0, target_ready: "" },
+    { id: 6, name: "Massa 6", start: "02:30", productKey: "minicara", ferment_pct: 2.0, target_ready: "" }
+  ];
+});
+
+// 🧩 Adicione este trecho logo aqui 👇
+useEffect(() => {
+  const ids = new Set();
+  let changed = false;
+  const fixed = batches.map(b => {
+    if (ids.has(b.id)) {
+      changed = true;
+      return { ...b, id: Date.now() + Math.random() }; // ID único novo
+    }
+    ids.add(b.id);
+    return b;
   });
-  useEffect(() => localStorage.setItem("pp_batches_v1", JSON.stringify(batches)), [batches]);
+  if (changed) setBatches(fixed);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+// 👇 mantém o salvamento no localStorage
+useEffect(() => 
+  localStorage.setItem("pp_batches_v1", JSON.stringify(batches)), 
+[batches]);
 
   /** ---- Séries e resultados ---- **/
   const tempSeries = useMemo(
@@ -206,10 +226,15 @@ export default function App() {
 
   /** ---- Handlers: Lotes ---- **/
   const addBatch = () => {
-    if (batches.length >= MAX_BATCHES) return;
-    const id = batches.length + 1;
-    const start = minutesToTime((id - 1) * 30);
-    setBatches([...batches, { id, name: `Massa ${id}`, start, productKey: "forma", ferment_pct: 2.0, target_ready: "" }]);
+  if (batches.length >= MAX_BATCHES) return;
+  const id = Date.now(); // ID único
+  const start = minutesToTime((batches.length) * 30);
+  setBatches([
+    ...batches,
+    { id, name: `Massa ${batches.length + 1}`, start, productKey: "forma", ferment_pct: 2.0, target_ready: "" }
+  ]);
+};
+
   };
   const removeBatch = (id) => setBatches(batches.filter((b) => b.id !== id));
   const updateBatch = (id, field, value) =>
