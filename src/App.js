@@ -1,516 +1,493 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+// src/App.js
+import { useEffect, useMemo, useState } from "react";
 
-/* ================== CONSTANTES ================== */
-const T_REF = 24;                 // temperatura de referência (°C)
-const K_TEMP_DEFAULT = 0.045;     // fallback se Q10=0
-const MAX_BATCHES = 20;
+/**
+ * Fermentation Controller – Final build
+ * - Exponential model combining temperature (Q10) and yeast nonlinearity (alpha).
+ * - Shows intermediate steps.
+ * - Persists last inputs in localStorage.
+ * - Includes "inverse mode" to solve for target yeast % given desired time.
+ */
 
-/* ================== DEFAULTS ================== */
-const DEFAULT_PRODUCTS = {
-  forma:      { key: "forma",      name: "Forma",      ideal_ref_min: 400, ferment_ref_pct: 4.0,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-  sovado:     { key: "sovado",     name: "Sovado",     ideal_ref_min: 340, ferment_ref_pct: 5.6,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-  hamburguer: { key: "hamburguer", name: "Hamburguer", ideal_ref_min: 270, ferment_ref_pct: 3.6,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-  hotdog:     { key: "hotdog",     name: "Hot dog",    ideal_ref_min: 270, ferment_ref_pct: 3.6,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-  cara:       { key: "cara",       name: "Cara",       ideal_ref_min: 380, ferment_ref_pct: 3.4,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-  minicara:   { key: "minicara",   name: "Mini cara",  ideal_ref_min: 270, ferment_ref_pct: 3.6,  k_temp: 0.055, q10: 0,    alpha: 1.0, corr: 1.0 },
-};
+const LS_KEY = "fermentation_v2_state";
 
-/* ================== HELPERS ================== */
-const timeToMinutes = (t) => {
-  const [h, m] = (t || "00:00").split(":").map(Number);
-  return (h * 60 + m) | 0;
-};
-const minutesToTime = (m) => {
-  const hh = Math.floor(m / 60) % 24;
-  const mm = Math.floor(m % 60);
-  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-};
+// Helpers — time <-> minutes
+function hhmmToMinutes(hhmm) {
+  if (!hhmm || typeof hhmm !== "string") return NaN;
+  const parts = hhmm.split(":");
+  if (parts.length !== 2) return NaN;
+  const h = Number(parts[0]);
+  const m = Number(parts[1]);
+  if (Number.isNaN(h) || Number.isNaN(m)) return NaN;
+  return h * 60 + m;
+}
 
-const toNumber = (v) => {
-  if (v === null || v === undefined) return NaN;
-  const s = String(v).replace(",", ".").trim();
-  if (s === "") return NaN;
-  const n = Number(s);
+function minutesToHHMM(totalMinutes) {
+  if (!isFinite(totalMinutes) || totalMinutes < 0) return "--:--";
+  const rounded = Math.round(totalMinutes);
+  const h = Math.floor(rounded / 60);
+  const m = rounded % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(h)}:${pad(m)}`;
+}
+
+// Numeric clamp & safe parse
+const toNum = (v) => {
+  const n = Number(v);
   return Number.isFinite(n) ? n : NaN;
 };
 
-const buildTempSeries = (schedule, simEnd, intervalMin) => {
-  const start = timeToMinutes("00:00");
-  const end = timeToMinutes(simEnd);
-  const out = [];
-  for (let t = start; t <= end; t += intervalMin) {
-    let curr = schedule[0];
-    for (const s of schedule) {
-      if (timeToMinutes(s.time) <= t) curr = s;
-    }
-    out.push({ time: minutesToTime(t), tmin: t, temp: Number(curr.temp) });
-  }
-  return out;
-};
-
-/* ================== FATOR DE TEMPERATURA ================== */
-// Se Q10>0 usa lei Q10, senão usa k_temp (Arrhenius)
-const rateFactor = (temp, product) => {
-  const q10 = Number(product?.q10 ?? 0);
-  if (q10 && q10 > 0) {
-    // A cada +10°C, a velocidade multiplica por Q10
-    return Math.pow(q10, (temp - T_REF) / 10);
-  }
-  const k = Number(product?.k_temp ?? K_TEMP_DEFAULT);
-  return Math.exp(k * (temp - T_REF));
-};
-
-
-/* ================== INCREMENTOS / ACÚMULOS ================== */
-const eqIncrement = (intervalMin, temp, product, ferment_pct) => {
-  const temp_factor = rateFactor(temp, product);
-  const fermentRef = Number(product?.ferment_ref_pct ?? 2.0);
-  const alpha = Number(product?.alpha ?? 1.0);
-  const fpct = Number(ferment_pct || fermentRef);
-  const ferment_factor = Math.pow(fpct / fermentRef, Math.max(alpha, 0));
-  // quanto mais quente/fermento → mais rápido → incrementa mais
-  return intervalMin * temp_factor * ferment_factor;
-};
-
-const accumulateEqMinutesForRange = (tA, tB, series, product, ferment_pct, intervalMin) => {
-  let acc = 0;
-  for (const seg of series) {
-    if (seg.tmin >= tA && seg.tmin < tB) {
-      acc += eqIncrement(intervalMin, seg.temp, product, ferment_pct);
-    }
-  }
-  return acc;
-};
-
-const findFinishTime = (startMin, series, product, ferment_pct, intervalMin) => {
-  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
-  let acc = 0;
-  for (const seg of series) {
-    if (seg.tmin < startMin) continue;
-    acc += eqIncrement(intervalMin, seg.temp, product, ferment_pct);
-    if (acc >= ideal) return seg.tmin;
-  }
-  return null;
-};
-
-const solveStartTimeForTarget = (tTarget, series, product, ferment_pct, intervalMin) => {
-  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
-  let lo = 0;
-  let hi = tTarget;
-  for (let i = 0; i < 25; i++) {
-    const mid = Math.floor((lo + hi) / 2);
-    const acc = accumulateEqMinutesForRange(mid, tTarget, series, product, ferment_pct, intervalMin);
-    if (acc >= ideal) lo = mid + 1; else hi = mid - 1;
-  }
-  return Math.max(0, Math.min(tTarget, hi));
-};
-
-// Resolve % de fermento para bater o alvo com alpha
-const solveFermentPctForTarget = (startMin, tTarget, series, product, intervalMin) => {
-  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
-  const fermentRef = Number(product?.ferment_ref_pct ?? 2.0);
-  const alpha = Number(product?.alpha ?? 1.0);
-  const acc_ref = accumulateEqMinutesForRange(startMin, tTarget, series, product, fermentRef, intervalMin);
-  if (acc_ref <= 0) return fermentRef;
-  const F = ideal / acc_ref;
-  const needed = fermentRef * Math.pow(F, 1 / Math.max(alpha, 0.0001));
-  return Math.max(0.1, Math.round(needed * 100) / 100);
-};
-
-/* ================== APP ================== */
-export default function App() {
-  /* ---- Produtos ---- */
-  const [products, setProducts] = useState(() => {
-    const saved = localStorage.getItem("pp_products_v2");
-    if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-    return DEFAULT_PRODUCTS;
-  });
-  useEffect(() => {
-    localStorage.setItem("pp_products_v2", JSON.stringify(products));
-  }, [products]);
-
-  /* ---- Config / Cronograma ---- */
-  const [tempSchedule, setTempSchedule] = useState(() => {
-    const s = localStorage.getItem("pp_tempSchedule_v2");
-    return s ? JSON.parse(s) : [
-      { time: "07:00", temp: 24 },
-      { time: "09:00", temp: 27 },
-      { time: "11:00", temp: 29 }
-    ];
-  });
-  const [simEndTime, setSimEndTime] = useState(() => localStorage.getItem("pp_simEndTime_v2") || "14:00");
-  const [intervalMin, setIntervalMin] = useState(() => Number(localStorage.getItem("pp_intervalMin_v2") || 10));
-  useEffect(() => localStorage.setItem("pp_tempSchedule_v2", JSON.stringify(tempSchedule)), [tempSchedule]);
-  useEffect(() => localStorage.setItem("pp_simEndTime_v2", simEndTime), [simEndTime]);
-  useEffect(() => localStorage.setItem("pp_intervalMin_v2", String(intervalMin)), [intervalMin]);
-
-  /* ---- Lotes ---- */
-  const [batches, setBatches] = useState(() => {
-    const b = localStorage.getItem("pp_batches_v2");
-    if (b) { try { return JSON.parse(b); } catch { /* ignore */ } }
-    // exemplo inicial
-    return [
-      { id: 1, name: "Massa 1", start: "07:30", productKey: "forma",      ferment_pct: 3.0, target_ready: "12:30" },
-      { id: 2, name: "Massa 2", start: "07:50", productKey: "cara",       ferment_pct: 3.4, target_ready: "12:00" },
-      { id: 3, name: "Massa 3", start: "08:20", productKey: "cara",       ferment_pct: 3.0, target_ready: "12:30" },
-      { id: 4, name: "Massa 4", start: "09:00", productKey: "sovado",     ferment_pct: 6.0, target_ready: "13:00" }
-    ];
-  });
-
-  // de-duplicar IDs antigos
-  useEffect(() => {
-    const ids = new Set();
-    let changed = false;
-    const fixed = batches.map((b) => {
-      if (ids.has(b.id)) {
-        changed = true;
-        return { ...b, id: Date.now() + Math.random() };
+const Section = ({ title, children }) => (
+  <div className="section">
+    <h2>{title}</h2>
+    {children}
+    <style jsx>{`
+      .section {
+        background: #fff;
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
+        margin-bottom: 16px;
       }
-      ids.add(b.id);
-      return b;
-    });
-    if (changed) setBatches(fixed);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      h2 {
+        margin: 0 0 12px 0;
+        font-size: 18px;
+      }
+    `}</style>
+  </div>
+);
 
-  useEffect(() => localStorage.setItem("pp_batches_v2", JSON.stringify(batches)), [batches]);
+export default function App() {
+  const [state, setState] = useState(() => {
+    const saved = localStorage.getItem(LS_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        // ignore
+      }
+    }
+    return {
+      baseTemp: 25, // °C do teste base
+      targetTemp: 30, // °C desejado
+      baseTimeHHMM: "08:00", // tempo base (hh:mm)
+      baseYeast: 1.0, // % de fermento fresco (ou eq. seco), no teste base
+      targetYeast: 1.0, // % de fermento na nova condição (modo direto)
+      q10: 2.0, // fator Q10 típico
+      alpha: 0.80, // expoente de sensibilidade do fermento
+      inverseMode: false, // se true, calcular % de fermento para atingir um tempo alvo
+      desiredTimeHHMM: "05:00", // usado no modo inverso
+      notes: "",
+    };
+  });
 
-  /* ---- Séries e resultados ---- */
-  const tempSeries = useMemo(
-    () => buildTempSeries(tempSchedule, simEndTime, intervalMin),
-    [tempSchedule, simEndTime, intervalMin]
-  );
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, JSON.stringify(state));
+  }, [state]);
 
-  const results = useMemo(() => {
-    const out = batches.map((b) => {
-      const p = products[b.productKey] || {};
-      return { ...b, accumulated_eq_min: 0, _p: p };
-    });
+  const set = (patch) => setState((s) => ({ ...s, ...patch }));
 
-    for (const seg of tempSeries) {
-      for (const b of out) {
-        const startMin = timeToMinutes(b.start);
-        if (seg.tmin >= startMin && seg.tmin < timeToMinutes(simEndTime)) {
-          b.accumulated_eq_min += eqIncrement(intervalMin, seg.temp, b._p, b.ferment_pct);
+  // Derivations
+  const derived = useMemo(() => {
+    const baseT = toNum(state.baseTemp);
+    const targT = toNum(state.targetTemp);
+    const baseY = toNum(state.baseYeast) / 100; // converter % -> fração
+    const targY = toNum(state.targetYeast) / 100;
+    const q10 = toNum(state.q10);
+    const alpha = toNum(state.alpha);
+
+    const baseMin = hhmmToMinutes(state.baseTimeHHMM);
+    const desiredMin = hhmmToMinutes(state.desiredTimeHHMM);
+
+    const okTemps = isFinite(baseT) && isFinite(targT);
+    const okQ10 = isFinite(q10) && q10 > 0;
+    const okAlpha = isFinite(alpha) && alpha > 0;
+    const okBaseMin = isFinite(baseMin) && baseMin > 0;
+    const okBaseY = isFinite(baseY) && baseY > 0;
+
+    // Temperatura
+    const dT = okTemps ? targT - baseT : NaN;
+    const rateT = okTemps && okQ10 ? Math.pow(q10, dT / 10) : NaN;
+
+    // Modo direto: calcula tempo alvo dado targetYeast
+    let rateY = NaN;
+    let totalRate = NaN;
+    let timeTargetMin = NaN;
+
+    if (!state.inverseMode) {
+      if (okAlpha && okBaseY && isFinite(targY) && targY > 0) {
+        rateY = Math.pow(targY / baseY, alpha);
+      }
+      totalRate = isFinite(rateT) && isFinite(rateY) ? rateT * rateY : NaN;
+      timeTargetMin =
+        okBaseMin && isFinite(totalRate) && totalRate > 0
+          ? baseMin / totalRate
+          : NaN;
+    }
+
+    // Modo inverso: resolve targetYeast para atingir desiredTime
+    let solvedTargetYeastPct = NaN;
+    if (state.inverseMode) {
+      if (okAlpha && okBaseY && okBaseMin && isFinite(desiredMin) && desiredMin > 0 && isFinite(rateT) && rateT > 0) {
+        // desiredMin = baseMin / ( rateT * ( (Y2/Y1)^alpha ) )
+        // => (Y2/Y1)^alpha = baseMin / (rateT * desiredMin)
+        // => Y2 = Y1 * [ baseMin / (rateT * desiredMin) ]^(1/alpha)
+        const rhs = baseMin / (rateT * desiredMin);
+        if (rhs > 0) {
+          const Y2 = baseY * Math.pow(rhs, 1 / alpha);
+          solvedTargetYeastPct = Y2 * 100; // volta para %
         }
       }
     }
 
-    for (const b of out) {
-      const ideal = Number(b._p?.ideal_ref_min ?? 60) * Number(b._p?.corr ?? 1);
-      b.pct = Math.min(100, (b.accumulated_eq_min / ideal) * 100);
-      b.estimated_time_remaining_min = Math.max(0, Math.round(ideal - b.accumulated_eq_min));
-      b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
-      b.predicted_finish_min = findFinishTime(timeToMinutes(b.start), tempSeries, b._p, b.ferment_pct, intervalMin);
-
-      if (typeof b.target_ready === "string" && b.target_ready.includes(":")) {
-        const tTarget = timeToMinutes(b.target_ready);
-        b.error_min = (b.predicted_finish_min == null) ? null : (b.predicted_finish_min - tTarget);
-      } else {
-        b.error_min = null;
-      }
-    }
-
-    return out;
-  }, [batches, tempSeries, simEndTime, intervalMin, products]);
-
-  /* ---- Handlers: Cronograma ---- */
-  const addTempPoint = () => {
-    const last = tempSchedule[tempSchedule.length - 1] || { time: "00:00", temp: 24 };
-    const nextMin = Math.min(timeToMinutes(simEndTime), timeToMinutes(last.time) + 30);
-    const newPoint = { time: minutesToTime(nextMin), temp: last.temp };
-    setTempSchedule([...tempSchedule, newPoint]);
-  };
-  const removeTempPoint = (idx) => {
-    if (tempSchedule.length <= 1) return;
-    setTempSchedule(tempSchedule.filter((_, i) => i !== idx));
-  };
-
-  /* ---- Handlers: Lotes ---- */
-  const addBatch = () => {
-    if (batches.length >= MAX_BATCHES) return;
-    const id = Date.now();
-    const start = minutesToTime((batches.length) * 30);
-    setBatches([
-      ...batches,
-      { id, name: `Massa ${batches.length + 1}`, start, productKey: "forma", ferment_pct: 2.0, target_ready: "" }
-    ]);
-  };
-  const removeBatch = (id) => setBatches(batches.filter((b) => b.id !== id));
-  const updateBatch = (id, field, value) => {
-    setBatches((prev) => prev.map((b) => {
-      if (b.id !== id) return b;
-      if (field === "ferment_pct") {
-        const n = toNumber(value);
-        return { ...b, ferment_pct: Number.isNaN(n) ? (value === "" ? "" : b.ferment_pct) : n };
-      }
-      return { ...b, [field]: value };
-    }));
-  };
-
-  const adjustStartForTarget = (id) => {
-    const b = batches.find((x) => x.id === id);
-    if (!b || !b.target_ready) return;
-    const p = products[b.productKey] || {};
-    const tTarget = timeToMinutes(b.target_ready);
-    const newStartMin = solveStartTimeForTarget(tTarget, tempSeries, p, b.ferment_pct, intervalMin);
-    updateBatch(id, "start", minutesToTime(newStartMin));
-  };
-  const adjustFermentForTarget = (id) => {
-    const b = batches.find((x) => x.id === id);
-    if (!b || !b.target_ready) return;
-    const p = products[b.productKey] || {};
-    const startMin = timeToMinutes(b.start);
-    const tTarget = timeToMinutes(b.target_ready);
-    if (tTarget <= startMin) return;
-    const newPct = solveFermentPctForTarget(startMin, tTarget, tempSeries, p, intervalMin);
-    updateBatch(id, "ferment_pct", newPct);
-  };
-
-  /* ---- Handlers: Produtos ---- */
-  const updateProductField = (key, field, value) => {
-    setProducts((prev) => {
-      const current = prev[key]?.[field];
-      let v = value;
-      if (["ideal_ref_min", "ferment_ref_pct", "k_temp", "q10", "alpha", "corr"].includes(field)) {
-        const n = toNumber(value);
-        if (!Number.isNaN(n)) v = n;
-        else if (value === "") v = "";
-        else v = current ?? "";
-      }
-      return { ...prev, [key]: { ...prev[key], [field]: v } };
-    });
-  };
-
-  const exportProducts = () => {
-    const blob = new Blob([JSON.stringify(products, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "produtos_praiapao.json"; a.click();
-    URL.revokeObjectURL(url);
-  };
-  const importProducts = (file) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      try { setProducts(JSON.parse(reader.result)); alert("Produtos importados com sucesso!"); }
-      catch { alert("Arquivo inválido."); }
+    return {
+      baseT,
+      targT,
+      baseY,
+      targY,
+      q10,
+      alpha,
+      baseMin,
+      desiredMin,
+      dT,
+      rateT,
+      rateY,
+      totalRate,
+      timeTargetMin,
+      solvedTargetYeastPct,
     };
-    reader.readAsText(file);
-  };
+  }, [state]);
 
-  /* ---- UI ---- */
-  const [tab, setTab] = useState("painel"); // "painel" | "produtos"
+  // UI formatters
+  const fmt = (n, dp = 3) =>
+    isFinite(n) ? Number(n).toFixed(dp) : "—";
+
+  const blockError = (cond, msg) =>
+    cond ? null : <div className="err">{msg}</div>;
 
   return (
-    <div style={{ padding: 20, maxWidth: 1240, margin: "0 auto", color: "#e6eef8", fontFamily: "Inter, Roboto, sans-serif" }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <h1 style={{ margin: 0 }}>Praia Pão — Controle de Fermentação</h1>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setTab("painel")} style={{ padding: "8px 12px", borderRadius: 6, border: 0, cursor: "pointer", background: tab==="painel" ? "#1f6feb" : "#2b3145", color: "#fff" }}>Painel</button>
-          <button onClick={() => setTab("produtos")} style={{ padding: "8px 12px", borderRadius: 6, border: 0, cursor: "pointer", background: tab==="produtos" ? "#1f6feb" : "#2b3145", color: "#fff" }}>Produtos</button>
+    <div className="wrap">
+      <header>
+        <h1>Controle de Fermentação — v2 (Q10 + α)</h1>
+        <p className="muted">
+          Modelo exponencial que combina temperatura (Q10) e sensibilidade ao
+          fermento (α). Ajuste os parâmetros abaixo e veja o tempo previsto ou a
+          quantidade de fermento necessária.
+        </p>
+      </header>
+
+      <Section title="Condições do teste base">
+        <div className="grid">
+          <label>
+            Temperatura base (°C)
+            <input
+              type="number"
+              value={state.baseTemp}
+              onChange={(e) => set({ baseTemp: e.target.value })}
+              step="0.1"
+            />
+          </label>
+          <label>
+            Tempo base (hh:mm)
+            <input
+              type="text"
+              value={state.baseTimeHHMM}
+              onChange={(e) => set({ baseTimeHHMM: e.target.value })}
+              placeholder="ex: 08:00"
+            />
+          </label>
+          <label>
+            Fermento base (% sobre a farinha)
+            <input
+              type="number"
+              value={state.baseYeast}
+              onChange={(e) => set({ baseYeast: e.target.value })}
+              step="0.01"
+            />
+          </label>
         </div>
-      </div>
+      </Section>
 
-      {tab === "painel" && (
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-          {/* Configurações */}
-          <div style={{ flex: "0 0 360px", background: "#0f1724", borderRadius: 10, padding: 12, boxShadow: "0 6px 18px rgba(2,6,23,0.6)" }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Configurações</div>
-            <div style={{ fontSize: 13, color: "#9fb0c8" }}>Fim da simulação</div>
-            <input value={simEndTime} onChange={(e) => setSimEndTime(e.target.value)} style={{ width: "100%", padding: 8, margin: "6px 0 10px 0" }} />
-            <div style={{ fontSize: 13, color: "#9fb0c8" }}>Resolução (min)</div>
-            <input value={intervalMin} onChange={(e) => setIntervalMin(Number(e.target.value))} style={{ width: "100%", padding: 8, marginTop: 6 }} />
-
-            <div style={{ marginTop: 14 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>Cronograma de Temperatura</div>
-              {tempSchedule.map((s, idx) => (
-                <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <input
-                    value={s.time}
-                    onChange={(e) => { const t = [...tempSchedule]; t[idx].time = e.target.value; setTempSchedule(t); }}
-                    style={{ width: 90, padding: 6 }}
-                  />
-                  <input
-                    value={s.temp}
-                    onChange={(e) => {
-                      const t = [...tempSchedule];
-                      const n = toNumber(e.target.value);
-                      if (!Number.isNaN(n)) t[idx].temp = n;
-                      else if (e.target.value === "") t[idx].temp = "";
-                      setTempSchedule(t);
-                    }}
-                    style={{ width: 80, padding: 6 }}
-                  />
-                  <button onClick={() => removeTempPoint(idx)} style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>remover</button>
-                </div>
-              ))}
-              <button onClick={addTempPoint} style={{ marginTop: 6, padding: "8px 12px", background: "#1f6feb", color: "white", border: 0, borderRadius: 6, cursor: "pointer" }}>
-                + Adicionar ponto
-              </button>
-            </div>
-          </div>
-
-          {/* Lotes */}
-          <div style={{ flex: "1 1 700px", background: "#0f1724", borderRadius: 10, padding: 12, boxShadow: "0 6px 18px rgba(2,6,23,0.6)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontWeight: 600 }}>Lotes</div>
-              <div>
-                <button onClick={addBatch} disabled={batches.length >= MAX_BATCHES}
-                        style={{ padding: "8px 12px", background: batches.length >= MAX_BATCHES ? "#3a4566" : "#22c55e", color: "#0b1020", border: 0, borderRadius: 6, cursor: batches.length >= MAX_BATCHES ? "not-allowed" : "pointer" }}>
-                  + Adicionar lote
-                </button>
-              </div>
-            </div>
-
-            <div style={{ overflowX: "auto", marginTop: 8 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "#121a2d" }}>
-                    <th style={{ padding: 8, textAlign: "left" }}>Nome</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Início</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Produto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>% Fermento</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>%</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Restante (min)</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Alvo pronto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Previsto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Erro (min)</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {results.map((r) => (
-                    <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.name} onChange={(e) => updateBatch(r.id, "name", e.target.value)} style={{ width: 140, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.start} onChange={(e) => updateBatch(r.id, "start", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <select value={r.productKey} onChange={(e) => updateBatch(r.id, "productKey", e.target.value)} style={{ padding: 6 }}>
-                          {Object.keys(products).map((k) => (
-                            <option key={k} value={k}>{products[k].name}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.ferment_pct} onChange={(e) => updateBatch(r.id, "ferment_pct", e.target.value)} style={{ width: 80, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>{r.pct.toFixed(1)}%</td>
-                      <td style={{ padding: 8 }}>{r.estimated_time_remaining_min}</td>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.target_ready || ""} onChange={(e) => updateBatch(r.id, "target_ready", e.target.value)} style={{ width: 90, padding: 6 }} placeholder="HH:MM" />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        {r.predicted_finish_min == null ? "—" : minutesToTime(r.predicted_finish_min)}
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        {r.error_min == null ? "—" : (r.error_min > 0 ? `+${r.error_min}` : `${r.error_min}`)}
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <button onClick={() => adjustStartForTarget(r.id)} style={{ marginRight: 6, padding: "6px 10px", background: "#1f6feb", color: "#fff", border: 0, borderRadius: 6, cursor: "pointer" }}>
-                          ajustar início
-                        </button>
-                        <button onClick={() => adjustFermentForTarget(r.id)} style={{ marginRight: 6, padding: "6px 10px", background: "#22c55e", color: "#0b1020", border: 0, borderRadius: 6, cursor: "pointer" }}>
-                          ajustar %fermento
-                        </button>
-                        <button onClick={() => removeBatch(r.id)} style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>
-                          remover
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div style={{ height: 240, marginTop: 12 }}>
-              <ResponsiveContainer>
-                <LineChart data={tempSeries}>
-                  <XAxis dataKey="time" />
-                  <YAxis domain={[10, 40]} />
-                  <Tooltip />
-                  <Line type="monotone" dataKey="temp" stroke="#ff6600" dot={false} name="Temp (°C)" />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
+      <Section title="Parâmetros do modelo">
+        <div className="grid">
+          <label>
+            Q10 (fator por +10°C)
+            <input
+              type="number"
+              value={state.q10}
+              onChange={(e) => set({ q10: e.target.value })}
+              step="0.01"
+            />
+          </label>
+          <label>
+            α (alfa – sensibilidade ao % de fermento)
+            <input
+              type="number"
+              value={state.alpha}
+              onChange={(e) => set({ alpha: e.target.value })}
+              step="0.01"
+            />
+          </label>
         </div>
-      )}
+        <p className="hint">
+          Valores típicos: Q10 ≈ 1.8–2.5; α ≈ 0.7–0.9 (ajuste conforme seus testes).
+        </p>
+      </Section>
 
-      {tab === "produtos" && (
-        <div style={{ background: "#0f1724", borderRadius: 10, padding: 12, boxShadow: "0 6px 18px rgba(2,6,23,0.6)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontWeight: 600 }}>Produtos — calibração por variedade</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={exportProducts} style={{ padding: "8px 12px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>Exportar JSON</button>
-              <label style={{ padding: "8px 12px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>
-                Importar JSON
-                <input type="file" accept="application/json" onChange={(e) => e.target.files?.[0] && importProducts(e.target.files[0])} style={{ display: "none" }} />
-              </label>
-            </div>
-          </div>
+      <Section title="Nova condição">
+        <div className="mode-toggle">
+          <button
+            className={!state.inverseMode ? "active" : ""}
+            onClick={() => set({ inverseMode: false })}
+          >
+            Calcular tempo (dado % de fermento)
+          </button>
+          <button
+            className={state.inverseMode ? "active" : ""}
+            onClick={() => set({ inverseMode: true })}
+          >
+            Calcular % de fermento (dado tempo desejado)
+          </button>
+        </div>
 
-          <div style={{ overflowX: "auto", marginTop: 10 }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "#121a2d" }}>
-                  <th style={{ padding: 8, textAlign: "left" }}>Produto</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>Tempo ref (min)</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>Fermento ref (%)</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>k_temp</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>Q10</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>alpha</th>
-                  <th style={{ padding: 8, textAlign: "left" }}>corr (x)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.keys(products).map((k) => {
-                  const p = products[k];
-                  return (
-                    <tr key={k} style={{ borderBottom: "1px solid #1a2340" }}>
-                      <td style={{ padding: 8 }}>{p.name}</td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.ideal_ref_min} onChange={(e) => updateProductField(k, "ideal_ref_min", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.ferment_ref_pct} onChange={(e) => updateProductField(k, "ferment_ref_pct", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.k_temp} onChange={(e) => updateProductField(k, "k_temp", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.q10} onChange={(e) => updateProductField(k, "q10", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.alpha} onChange={(e) => updateProductField(k, "alpha", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={p.corr} onChange={(e) => updateProductField(k, "corr", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div className="grid">
+          <label>
+            Temperatura alvo (°C)
+            <input
+              type="number"
+              value={state.targetTemp}
+              onChange={(e) => set({ targetTemp: e.target.value })}
+              step="0.1"
+            />
+          </label>
 
-          <div style={{ marginTop: 10, fontSize: 13, color: "#9fb0c8" }}>
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              <li><b>Tempo ref (min)</b>: tempo “ideal” na referência T_ref = {T_REF} °C.</li>
-              <li><b>Fermento ref (%)</b>: % usada no teste de referência do produto.</li>
-              <li><b>Q10</b>: multiplicador de velocidade a cada +10 °C (se 0, usa <b>k_temp</b>).</li>
-              <li><b>alpha</b>: sensibilidade ao % de fermento (1.0 = linear, &gt;1 mais sensível, &lt;1 menos sensível).</li>
-              <li><b>corr</b>: fator de correção global do produto.</li>
+          {!state.inverseMode ? (
+            <label>
+              Fermento alvo (% sobre a farinha)
+              <input
+                type="number"
+                value={state.targetYeast}
+                onChange={(e) => set({ targetYeast: e.target.value })}
+                step="0.01"
+              />
+            </label>
+          ) : (
+            <label>
+              Tempo desejado (hh:mm)
+              <input
+                type="text"
+                value={state.desiredTimeHHMM}
+                onChange={(e) => set({ desiredTimeHHMM: e.target.value })}
+                placeholder="ex: 05:00"
+              />
+            </label>
+          )}
+        </div>
+
+        <div className="grid slim">
+          <div className="calcbox">
+            <h3>Passos do cálculo</h3>
+            <ul>
+              <li>
+                ΔT = T<sub>alvo</sub> − T<sub>base</sub> ={" "}
+                <strong>{fmt(derived.dT, 2)} °C</strong>
+              </li>
+              <li>
+                Fator de temperatura: Q10<sup>(ΔT/10)</sup> ={" "}
+                <strong>{fmt(derived.rateT, 4)}</strong>
+              </li>
+              {!state.inverseMode ? (
+                <>
+                  <li>
+                    Fator de fermento: (Y<sub>alvo</sub>/Y<sub>base</sub>)<sup>α</sup>{" "}
+                    = <strong>{fmt(derived.rateY, 4)}</strong>
+                  </li>
+                  <li>
+                    Taxa total: <strong>{fmt(derived.totalRate, 4)}</strong>
+                  </li>
+                  <li>
+                    Tempo previsto:{" "}
+                    <strong>{minutesToHHMM(derived.timeTargetMin)}</strong>
+                  </li>
+                </>
+              ) : (
+                <>
+                  <li>
+                    % de fermento necessário:{" "}
+                    <strong>
+                      {isFinite(derived.solvedTargetYeastPct)
+                        ? `${derived.solvedTargetYeastPct.toFixed(2)} %`
+                        : "—"}
+                    </strong>
+                  </li>
+                </>
+              )}
             </ul>
           </div>
+
+          <div className="resultbox">
+            {!state.inverseMode ? (
+              <>
+                <div className="headline">Tempo na nova condição</div>
+                <div className="big">
+                  {minutesToHHMM(derived.timeTargetMin)}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="headline">% de fermento necessário</div>
+                <div className="big">
+                  {isFinite(derived.solvedTargetYeastPct)
+                    ? `${derived.solvedTargetYeastPct.toFixed(2)} %`
+                    : "—"}
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      )}
+
+        {blockError(isFinite(derived.rateT), "Verifique Q10 e temperaturas.")}
+        {!state.inverseMode &&
+          blockError(
+            isFinite(derived.rateY),
+            "Verifique α, % de fermento base e alvo."
+          )}
+        {!state.inverseMode &&
+          blockError(
+            isFinite(derived.timeTargetMin),
+            "Verifique tempo base e os parâmetros acima."
+          )}
+        {state.inverseMode &&
+          blockError(
+            isFinite(derived.solvedTargetYeastPct),
+            "Verifique tempo desejado e os parâmetros acima."
+          )}
+      </Section>
+
+      <Section title="Anotações (opcional)">
+        <textarea
+          rows={4}
+          value={state.notes}
+          onChange={(e) => set({ notes: e.target.value })}
+          placeholder="Ex.: Lote 102, farinha X, hidratação 68%, sal 2%..."
+        />
+      </Section>
+
+      <footer>
+        <small className="muted">
+          Dicas: ajuste α para encaixar seus próprios testes quando mudar apenas o
+          % de fermento; ajuste Q10 quando mudar apenas a temperatura. O tempo é
+          inversamente proporcional à taxa total.
+        </small>
+      </footer>
+
+      <style jsx global>{`
+        * {
+          box-sizing: border-box;
+          font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue",
+            Arial, "Noto Sans", "Liberation Sans", sans-serif;
+        }
+        body {
+          background: #f6f7fb;
+          margin: 0;
+          color: #1d1d1f;
+        }
+      `}</style>
+      <style jsx>{`
+        .wrap {
+          max-width: 960px;
+          margin: 24px auto 80px;
+          padding: 0 16px;
+        }
+        header {
+          margin: 12px 0 20px;
+        }
+        h1 {
+          margin: 0 0 6px;
+          font-size: 22px;
+        }
+        .muted {
+          color: #6b7280;
+        }
+        .grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 12px;
+        }
+        .grid.slim {
+          grid-template-columns: 1.2fr 1fr;
+          align-items: stretch;
+        }
+        label {
+          display: grid;
+          gap: 6px;
+          font-size: 14px;
+        }
+        input[type="number"],
+        input[type="text"],
+        textarea {
+          width: 100%;
+          padding: 10px 12px;
+          border: 1px solid #e5e7eb;
+          border-radius: 12px;
+          outline: none;
+          font-size: 14px;
+          background: #fff;
+        }
+        input:focus,
+        textarea:focus {
+          border-color: #6366f1;
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+        }
+        .mode-toggle {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+        .mode-toggle button {
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          padding: 8px 10px;
+          border-radius: 10px;
+          cursor: pointer;
+        }
+        .mode-toggle .active {
+          border-color: #6366f1;
+          box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+        }
+        .calcbox,
+        .resultbox {
+          background: #f9fafb;
+          border: 1px solid #eef0f4;
+          border-radius: 14px;
+          padding: 14px;
+        }
+        .calcbox ul {
+          margin: 0;
+          padding-left: 16px;
+        }
+        .calcbox li {
+          margin: 6px 0;
+        }
+        .headline {
+          font-size: 13px;
+          color: #6b7280;
+          margin-bottom: 6px;
+        }
+        .big {
+          font-size: 38px;
+          font-weight: 700;
+          letter-spacing: 0.5px;
+        }
+        .err {
+          margin-top: 12px;
+          color: #b91c1c;
+          background: #fef2f2;
+          border: 1px solid #fee2e2;
+          padding: 10px 12px;
+          border-radius: 12px;
+        }
+      `}</style>
     </div>
   );
 }
-
-
