@@ -61,7 +61,7 @@ function accumulateEqMinutesForRange(tA, tB, series, product, ferment_pct, inter
     if (t >= tA && t < tB) {
       const tf = Math.exp(ktemp * (seg.temp - T_REF));
       const ff = fermentRef / Number(ferment_pct || fermentRef);
-      acc += (intervalMin) / tf * (1 / ff);
+      acc += (intervalMin) * tf * (1 / ff);
     }
   }
   return acc;
@@ -74,7 +74,7 @@ function findFinishTime(startMin, series, product, ferment_pct, intervalMin) {
     if (seg.tmin < startMin) continue;
     const tf = Math.exp((product?.k_temp ?? K_TEMP_DEFAULT) * (seg.temp - T_REF));
     const ff = (product?.ferment_ref_pct ?? 2) / Number(ferment_pct || (product?.ferment_ref_pct ?? 2));
-    acc += (intervalMin)/tf * (1/ff);
+    acc += (intervalMin) * tf * (1 / ff);
     if (acc >= ideal) return seg.tmin;
   }
   return null;
@@ -165,7 +165,7 @@ export default function App() {
           const tf = rateFactor(seg.temp, b._p?.k_temp ?? K_TEMP_DEFAULT);
           const fermentRef = Number(b._p?.ferment_ref_pct ?? 2.0);
           const ff = fermentRef / Number(b.ferment_pct || fermentRef);
-          const eq = (intervalMin) / tf * (1 / ff);
+          const eq = (intervalMin) * tf * (1 / ff);
           b.accumulated_eq_min += eq;
         }
       }
