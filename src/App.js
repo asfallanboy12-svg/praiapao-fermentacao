@@ -236,7 +236,7 @@ useEffect(() =>
   ]);
 };
 
-  };
+  
   const removeBatch = (id) => setBatches(batches.filter((b) => b.id !== id));
   const updateBatch = (id, field, value) =>
     setBatches((prev) => prev.map((b) => {
