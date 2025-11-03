@@ -2,8 +2,8 @@ import React, { useState, useMemo, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 
 /** ========= PARÂMETROS GERAIS ========= **/
-const T_REF = 24;       // temperatura de referência (°C)
-const K_TEMP_DEFAULT = 0.045;   // sensibilidade padrão à temperatura
+const T_REF = 24;                  // temperatura de referência (°C)
+const K_TEMP_DEFAULT = 0.045;      // sensibilidade padrão à temperatura
 const MAX_BATCHES = 20;
 
 /** ========= DEFAULTS ========= **/
@@ -18,15 +18,14 @@ const DEFAULT_PRODUCTS = {
 
 /** ========= HELPERS ========= **/
 const timeToMinutes = (t) => {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
+  const [h, m] = (t || "00:00").split(":").map(Number);
+  return (h * 60 + m) | 0;
 };
 const minutesToTime = (m) => {
   const hh = Math.floor(m / 60) % 24;
   const mm = Math.floor(m % 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
-
 const buildTempSeries = (schedule, simEnd, interval) => {
   const start = timeToMinutes("00:00");
   const end = timeToMinutes(simEnd);
@@ -40,33 +39,83 @@ const buildTempSeries = (schedule, simEnd, interval) => {
   }
   return entries;
 };
-
 const rateFactor = (temp, k = K_TEMP_DEFAULT) => Math.exp(k * (temp - T_REF));
-// aceita "3,6" ou "3.6"
+
+// aceita "3,6" ou "3.6" e também números normais
 const toNumber = (v) => {
   if (v === null || v === undefined) return NaN;
-  const s = String(v).replace(',', '.').trim();
-  if (s === '') return NaN;
+  const s = String(v).replace(",", ".").trim();
+  if (s === "") return NaN;
   const n = Number(s);
   return Number.isFinite(n) ? n : NaN;
 };
 
+/** ========= FUNÇÕES DE PLANEJAMENTO POR HORÁRIO-ALVO ========= **/
+// acumula minutos equivalentes entre tA (inclusive) e tB (exclusivo) para UM lote
+function accumulateEqMinutesForRange(tA, tB, series, product, ferment_pct, intervalMin) {
+  const fermentRef = Number(product?.ferment_ref_pct ?? 2.0);
+  const ktemp = Number(product?.k_temp ?? K_TEMP_DEFAULT);
+  let acc = 0;
+  for (const seg of series) {
+    const t = seg.tmin;
+    if (t >= tA && t < tB) {
+      const tf = Math.exp(ktemp * (seg.temp - T_REF));
+      const ff = fermentRef / Number(ferment_pct || fermentRef);
+      acc += (intervalMin) / tf * (1 / ff);
+    }
+  }
+  return acc;
+}
+// encontra o horário (min) em que o lote chega a 100%; se não chegar, retorna null
+function findFinishTime(startMin, series, product, ferment_pct, intervalMin) {
+  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
+  let acc = 0;
+  for (const seg of series) {
+    if (seg.tmin < startMin) continue;
+    const tf = Math.exp((product?.k_temp ?? K_TEMP_DEFAULT) * (seg.temp - T_REF));
+    const ff = (product?.ferment_ref_pct ?? 2) / Number(ferment_pct || (product?.ferment_ref_pct ?? 2));
+    acc += (intervalMin)/tf * (1/ff);
+    if (acc >= ideal) return seg.tmin;
+  }
+  return null;
+}
+// dado um alvo (tTarget), encontra melhor "Início" por busca binária
+function solveStartTimeForTarget(tTarget, series, product, ferment_pct, intervalMin) {
+  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
+  let lo = 0;           // 00:00
+  let hi = tTarget;     // não pode começar depois do alvo
+  for (let i = 0; i < 25; i++) {
+    const mid = Math.floor((lo + hi) / 2);
+    const acc = accumulateEqMinutesForRange(mid, tTarget, series, product, ferment_pct, intervalMin);
+    if (acc >= ideal) lo = mid + 1;  // começou cedo demais: dá pra atrasar
+    else hi = mid - 1;                // começou tarde: precisa adiantar
+  }
+  return Math.max(0, Math.min(tTarget, hi));
+}
+// manter início fixo e resolver % de fermento p/ bater o alvo
+function solveFermentPctForTarget(startMin, tTarget, series, product, intervalMin) {
+  const ideal = Number(product?.ideal_ref_min ?? 60) * Number(product?.corr ?? 1);
+  const fermentRef = Number(product?.ferment_ref_pct ?? 2.0);
+  const acc_at_ff1 = accumulateEqMinutesForRange(startMin, tTarget, series, product, fermentRef, intervalMin);
+  if (acc_at_ff1 <= 0) return fermentRef;
+  const ff_needed = acc_at_ff1 / ideal;           // ver dedução nas mensagens anteriores
+  const ferment_pct_needed = fermentRef / ff_needed;
+  return Math.max(0.1, Math.round(ferment_pct_needed * 100) / 100); // 2 casas
+}
 
-/** ========= COMPONENTE ========= **/
+/** ========= APP ========= **/
 export default function App() {
-  /** ---- Produtos (com persistência) ---- **/
+  /** ---- Produtos (persistência) ---- **/
   const [products, setProducts] = useState(() => {
     const saved = localStorage.getItem("pp_products_v1");
-    if (saved) {
-      try { return JSON.parse(saved); } catch { /* ignore */ }
-    }
+    if (saved) { try { return JSON.parse(saved); } catch {} }
     return DEFAULT_PRODUCTS;
   });
   useEffect(() => {
     localStorage.setItem("pp_products_v1", JSON.stringify(products));
   }, [products]);
 
-  /** ---- Estado: cronograma/turno ---- **/
+  /** ---- Cronograma / Config (persistência) ---- **/
   const [tempSchedule, setTempSchedule] = useState(() => {
     const s = localStorage.getItem("pp_tempSchedule_v1");
     return s ? JSON.parse(s) : [
@@ -82,17 +131,17 @@ export default function App() {
   useEffect(() => localStorage.setItem("pp_simEndTime_v1", simEndTime), [simEndTime]);
   useEffect(() => localStorage.setItem("pp_intervalMin_v1", String(intervalMin)), [intervalMin]);
 
-  /** ---- Lotes (com persistência) ---- **/
+  /** ---- Lotes (persistência) ---- **/
   const [batches, setBatches] = useState(() => {
     const b = localStorage.getItem("pp_batches_v1");
-    if (b) { try { return JSON.parse(b); } catch { /* ignore */ } }
+    if (b) { try { return JSON.parse(b); } catch {} }
     return [
-      { id: 1, name: "Massa 1", start: "00:00", productKey: "forma",      ferment_pct: 2.0 },
-      { id: 2, name: "Massa 2", start: "00:30", productKey: "hamburguer", ferment_pct: 2.0 },
-      { id: 3, name: "Massa 3", start: "01:00", productKey: "hotdog",     ferment_pct: 3.6 },
-      { id: 4, name: "Massa 4", start: "01:30", productKey: "sovado",     ferment_pct: 2.0 },
-      { id: 5, name: "Massa 5", start: "02:00", productKey: "cara",       ferment_pct: 2.0 },
-      { id: 6, name: "Massa 6", start: "02:30", productKey: "minicara",   ferment_pct: 2.0 }
+      { id: 1, name: "Massa 1", start: "00:00", productKey: "forma",      ferment_pct: 2.0, target_ready: "" },
+      { id: 2, name: "Massa 2", start: "00:30", productKey: "hamburguer", ferment_pct: 2.0, target_ready: "" },
+      { id: 3, name: "Massa 3", start: "01:00", productKey: "hotdog",     ferment_pct: 3.6, target_ready: "" },
+      { id: 4, name: "Massa 4", start: "01:30", productKey: "sovado",     ferment_pct: 2.0, target_ready: "" },
+      { id: 5, name: "Massa 5", start: "02:00", productKey: "cara",       ferment_pct: 2.0, target_ready: "" },
+      { id: 6, name: "Massa 6", start: "02:30", productKey: "minicara",   ferment_pct: 2.0, target_ready: "" }
     ];
   });
   useEffect(() => localStorage.setItem("pp_batches_v1", JSON.stringify(batches)), [batches]);
@@ -113,13 +162,9 @@ export default function App() {
       for (const b of out) {
         const startMin = timeToMinutes(b.start);
         if (seg.tmin >= startMin && seg.tmin < timeToMinutes(simEndTime)) {
-          // parâmetros do produto
+          const tf = rateFactor(seg.temp, b._p?.k_temp ?? K_TEMP_DEFAULT);
           const fermentRef = Number(b._p?.ferment_ref_pct ?? 2.0);
-          const ktemp = Number(b._p?.k_temp ?? K_TEMP_DEFAULT);
-          const tf = rateFactor(seg.temp, ktemp);
           const ff = fermentRef / Number(b.ferment_pct || fermentRef);
-
-          // minutos equivalentes a T_REF neste intervalo
           const eq = (intervalMin) / tf * (1 / ff);
           b.accumulated_eq_min += eq;
         }
@@ -128,13 +173,21 @@ export default function App() {
 
     for (const b of out) {
       const ideal = Number(b._p?.ideal_ref_min ?? 60);
-      const corr = Number(b._p?.corr ?? 1.0);
-      const effectiveIdeal = ideal * corr; // corr < 1 => produto costuma acabar mais rápido
+      const corr  = Number(b._p?.corr ?? 1.0);
+      const effectiveIdeal = ideal * corr;
 
       b.pct = Math.min(100, (b.accumulated_eq_min / effectiveIdeal) * 100);
       b.estimated_time_remaining_min = Math.max(0, Math.round(effectiveIdeal - b.accumulated_eq_min));
       b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
-      b._effectiveIdeal = effectiveIdeal;
+
+      // novo: previsão e erro vs alvo
+      b.predicted_finish_min = findFinishTime(timeToMinutes(b.start), tempSeries, b._p, b.ferment_pct, intervalMin);
+      if (typeof b.target_ready === "string" && b.target_ready.includes(":")) {
+        const tTarget = timeToMinutes(b.target_ready);
+        b.error_min = (b.predicted_finish_min == null) ? null : (b.predicted_finish_min - tTarget);
+      } else {
+        b.error_min = null;
+      }
     }
     return out;
   }, [batches, tempSeries, simEndTime, intervalMin, products]);
@@ -156,57 +209,65 @@ export default function App() {
     if (batches.length >= MAX_BATCHES) return;
     const id = batches.length + 1;
     const start = minutesToTime((id - 1) * 30);
-    setBatches([
-      ...batches,
-      { id, name: `Massa ${id}`, start, productKey: "forma", ferment_pct: 2.0 }
-    ]);
+    setBatches([...batches, { id, name: `Massa ${id}`, start, productKey: "forma", ferment_pct: 2.0, target_ready: "" }]);
   };
   const removeBatch = (id) => setBatches(batches.filter((b) => b.id !== id));
- const updateBatch = (id, field, value) =>
-  setBatches((prev) => prev.map((b) => {
-    if (b.id !== id) return b;
-    if (field === 'ferment_pct') {
-      const n = toNumber(value);
-      return { ...b, ferment_pct: Number.isNaN(n) ? (value === '' ? '' : b.ferment_pct) : n };
-    }
-    return { ...b, [field]: value };
-  }));
+  const updateBatch = (id, field, value) =>
+    setBatches((prev) => prev.map((b) => {
+      if (b.id !== id) return b;
+      if (field === "ferment_pct") {
+        const n = toNumber(value);
+        return { ...b, ferment_pct: Number.isNaN(n) ? (value === "" ? "" : b.ferment_pct) : n };
+      }
+      return { ...b, [field]: value };
+    }));
+
+  // ajustes automáticos por alvo
+  const adjustStartForTarget = (id) => {
+    const b = batches.find(x => x.id === id);
+    if (!b || !b.target_ready) return;
+    const p = products[b.productKey] || {};
+    const tTarget = timeToMinutes(b.target_ready);
+    const newStartMin = solveStartTimeForTarget(tTarget, tempSeries, p, b.ferment_pct, intervalMin);
+    updateBatch(id, "start", minutesToTime(newStartMin));
+  };
+  const adjustFermentForTarget = (id) => {
+    const b = batches.find(x => x.id === id);
+    if (!b || !b.target_ready) return;
+    const p = products[b.productKey] || {};
+    const startMin = timeToMinutes(b.start);
+    const tTarget = timeToMinutes(b.target_ready);
+    if (tTarget <= startMin) return;
+    const newPct = solveFermentPctForTarget(startMin, tTarget, tempSeries, p, intervalMin);
+    updateBatch(id, "ferment_pct", newPct);
+  };
 
   /** ---- Handlers: Produtos ---- **/
   const updateProductField = (key, field, value) => {
-  setProducts((prev) => {
-    const current = prev[key]?.[field];
-    let v = value;
-    if (['ideal_ref_min','ferment_ref_pct','k_temp','corr'].includes(field)) {
-      const n = toNumber(value);
-      if (!Number.isNaN(n)) v = n;           // salva número válido
-      else if (value === '') v = '';          // permite limpar o campo
-      else v = current ?? '';                 // evita gravar NaN
-    }
-    return { ...prev, [key]: { ...prev[key], [field]: v } };
-  });
-};
-
+    setProducts((prev) => {
+      const current = prev[key]?.[field];
+      let v = value;
+      if (["ideal_ref_min", "ferment_ref_pct", "k_temp", "corr"].includes(field)) {
+        const n = toNumber(value);
+        if (!Number.isNaN(n)) v = n;
+        else if (value === "") v = "";
+        else v = current ?? "";
+      }
+      return { ...prev, [key]: { ...prev[key], [field]: v } };
+    });
   };
   const exportProducts = () => {
     const blob = new Blob([JSON.stringify(products, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = "produtos_praiapao.json";
-    a.click();
+    a.href = url; a.download = "produtos_praiapao.json"; a.click();
     URL.revokeObjectURL(url);
   };
   const importProducts = (file) => {
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        const obj = JSON.parse(reader.result);
-        setProducts(obj);
-        alert("Produtos importados com sucesso!");
-      } catch (e) {
-        alert("Arquivo inválido.");
-      }
+      try { setProducts(JSON.parse(reader.result)); alert("Produtos importados com sucesso!"); }
+      catch { alert("Arquivo inválido."); }
     };
     reader.readAsText(file);
   };
@@ -239,8 +300,22 @@ export default function App() {
               <div style={{ fontWeight: 600, marginBottom: 6 }}>Cronograma de Temperatura</div>
               {tempSchedule.map((s, idx) => (
                 <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-                  <input value={s.time} onChange={(e) => { const t = [...tempSchedule]; t[idx].time = e.target.value; setTempSchedule(t); }} style={{ width: 90, padding: 6 }} />
-                  <input value={s.temp} onChange={(e) => { const t = [...tempSchedule]; t[idx].temp = Number(e.target.value); setTempSchedule(t); }} style={{ width: 80, padding: 6 }} />
+                  <input
+                    value={s.time}
+                    onChange={(e) => { const t = [...tempSchedule]; t[idx].time = e.target.value; setTempSchedule(t); }}
+                    style={{ width: 90, padding: 6 }}
+                  />
+                  <input
+                    value={s.temp}
+                    onChange={(e) => {
+                      const t = [...tempSchedule];
+                      const n = toNumber(e.target.value);
+                      if (!Number.isNaN(n)) t[idx].temp = n;
+                      else if (e.target.value === "") t[idx].temp = "";
+                      setTempSchedule(t);
+                    }}
+                    style={{ width: 80, padding: 6 }}
+                  />
                   <button onClick={() => removeTempPoint(idx)} style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>remover</button>
                 </div>
               ))}
@@ -251,7 +326,7 @@ export default function App() {
           </div>
 
           {/* Lotes */}
-          <div style={{ flex: "1 1 620px", background: "#0f1724", borderRadius: 10, padding: 12, boxShadow: "0 6px 18px rgba(2,6,23,0.6)" }}>
+          <div style={{ flex: "1 1 700px", background: "#0f1724", borderRadius: 10, padding: 12, boxShadow: "0 6px 18px rgba(2,6,23,0.6)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ fontWeight: 600 }}>Lotes</div>
               <div>
@@ -272,6 +347,9 @@ export default function App() {
                     <th style={{ padding: 8, textAlign: "left" }}>% Fermento</th>
                     <th style={{ padding: 8, textAlign: "left" }}>%</th>
                     <th style={{ padding: 8, textAlign: "left" }}>Restante (min)</th>
+                    <th style={{ padding: 8, textAlign: "left" }}>Alvo pronto</th>
+                    <th style={{ padding: 8, textAlign: "left" }}>Previsto</th>
+                    <th style={{ padding: 8, textAlign: "left" }}>Erro (min)</th>
                     <th style={{ padding: 8, textAlign: "left" }}>Ações</th>
                   </tr>
                 </thead>
@@ -296,8 +374,33 @@ export default function App() {
                       </td>
                       <td style={{ padding: 8 }}>{r.pct.toFixed(1)}%</td>
                       <td style={{ padding: 8 }}>{r.estimated_time_remaining_min}</td>
+
                       <td style={{ padding: 8 }}>
-                        <button onClick={() => removeBatch(r.id)} style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>
+                        <input
+                          value={r.target_ready || ""}
+                          onChange={(e) => updateBatch(r.id, "target_ready", e.target.value)}
+                          style={{ width: 90, padding: 6 }}
+                          placeholder="HH:MM"
+                        />
+                      </td>
+                      <td style={{ padding: 8 }}>
+                        {r.predicted_finish_min == null ? "—" : minutesToTime(r.predicted_finish_min)}
+                      </td>
+                      <td style={{ padding: 8 }}>
+                        {r.error_min == null ? "—" : (r.error_min > 0 ? `+${r.error_min}` : `${r.error_min}`)}
+                      </td>
+
+                      <td style={{ padding: 8 }}>
+                        <button onClick={() => adjustStartForTarget(r.id)}
+                                style={{ marginRight: 6, padding: "6px 10px", background: "#1f6feb", color: "#fff", border: 0, borderRadius: 6, cursor: "pointer" }}>
+                          ajustar início
+                        </button>
+                        <button onClick={() => adjustFermentForTarget(r.id)}
+                                style={{ marginRight: 6, padding: "6px 10px", background: "#22c55e", color: "#0b1020", border: 0, borderRadius: 6, cursor: "pointer" }}>
+                          ajustar %fermento
+                        </button>
+                        <button onClick={() => removeBatch(r.id)}
+                                style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>
                           remover
                         </button>
                       </td>
@@ -352,16 +455,16 @@ export default function App() {
                     <tr key={k} style={{ borderBottom: "1px solid #1a2340" }}>
                       <td style={{ padding: 8 }}>{p.name}</td>
                       <td style={{ padding: 8 }}>
-                        <input value={p.ideal_ref_min} onChange={(e) => updateProductField(k, "ideal_ref_min", Number(e.target.value))} style={{ width: 90, padding: 6 }} />
+                        <input value={p.ideal_ref_min} onChange={(e) => updateProductField(k, "ideal_ref_min", e.target.value)} style={{ width: 90, padding: 6 }} />
                       </td>
                       <td style={{ padding: 8 }}>
-                        <input value={p.ferment_ref_pct} onChange={(e) => updateProductField(k, "ferment_ref_pct", Number(e.target.value))} style={{ width: 90, padding: 6 }} />
+                        <input value={p.ferment_ref_pct} onChange={(e) => updateProductField(k, "ferment_ref_pct", e.target.value)} style={{ width: 90, padding: 6 }} />
                       </td>
                       <td style={{ padding: 8 }}>
-                        <input value={p.k_temp} onChange={(e) => updateProductField(k, "k_temp", Number(e.target.value))} style={{ width: 90, padding: 6 }} />
+                        <input value={p.k_temp} onChange={(e) => updateProductField(k, "k_temp", e.target.value)} style={{ width: 90, padding: 6 }} />
                       </td>
                       <td style={{ padding: 8 }}>
-                        <input value={p.corr} onChange={(e) => updateProductField(k, "corr", Number(e.target.value))} style={{ width: 90, padding: 6 }} />
+                        <input value={p.corr} onChange={(e) => updateProductField(k, "corr", e.target.value)} style={{ width: 90, padding: 6 }} />
                       </td>
                     </tr>
                   );
@@ -382,7 +485,7 @@ export default function App() {
       )}
 
       <div style={{ marginTop: 12, fontSize: 13, color: "#9fb0c8" }}>
-        <strong>Como usar:</strong> cadastre/ajuste os produtos na aba <i>Produtos</i>; no <i>Painel</i>, selecione o produto em cada lote, informe hora de início e % de fermento; ajuste a curva térmica pelos pontos.
+        <strong>Como usar:</strong> cadastre/ajuste produtos na aba <i>Produtos</i>; no <i>Painel</i>, para cada lote informe Início, Produto, % de fermento e (se quiser planejar por horário) o campo <i>Alvo pronto</i>. Use os botões <i>ajustar início</i> ou <i>ajustar %fermento</i> para bater o alvo.
       </div>
     </div>
   );
