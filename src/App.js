@@ -261,6 +261,17 @@ export default function App() {
         return { ...b, [field]: value };
       })
     );
+  // Mover lote na lista: dir = -1 (sobe) ou +1 (desce)
+  const moveBatch = (index, dir) => {
+  setBatches(prev => {
+    const arr = [...prev];
+    const target = index + dir;
+    if (target < 0 || target >= arr.length) return prev; // fora dos limites
+    [arr[index], arr[target]] = [arr[target], arr[index]]; // swap
+    return arr; // useEffect já persiste no localStorage
+  });
+};
+
 
   // ajustes automáticos por alvo
   const adjustStartForTarget = (id) => {
@@ -394,61 +405,140 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {results.map((r) => (
-                    <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.name} onChange={(e) => updateBatch(r.id, "name", e.target.value)} style={{ width: 140, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.start} onChange={(e) => updateBatch(r.id, "start", e.target.value)} style={{ width: 90, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <select value={r.productKey} onChange={(e) => updateBatch(r.id, "productKey", e.target.value)} style={{ padding: 6 }}>
-                          {Object.keys(products).map((k) => (
-                            <option key={k} value={k}>{products[k].name}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        <input value={r.ferment_pct} onChange={(e) => updateBatch(r.id, "ferment_pct", e.target.value)} style={{ width: 80, padding: 6 }} />
-                      </td>
-                      <td style={{ padding: 8 }}>{r.pct.toFixed(1)}%</td>
-                      <td style={{ padding: 8 }}>{r.estimated_time_remaining_min}</td>
+  {results.map((r, idx) => (
+    <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
+      <td style={{ padding: 8 }}>
+        <input
+          value={r.name}
+          onChange={(e) => updateBatch(r.id, "name", e.target.value)}
+          style={{ width: 140, padding: 6 }}
+        />
+      </td>
 
-                      <td style={{ padding: 8 }}>
-                        <input
-                          value={r.target_ready || ""}
-                          onChange={(e) => updateBatch(r.id, "target_ready", e.target.value)}
-                          style={{ width: 90, padding: 6 }}
-                          placeholder="HH:MM"
-                        />
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        {r.predicted_finish_min == null ? "—" : minutesToTime(r.predicted_finish_min)}
-                      </td>
-                      <td style={{ padding: 8 }}>
-                        {r.error_min == null ? "—" : (r.error_min > 0 ? `+${r.error_min}` : `${r.error_min}`)}
-                      </td>
+      <td style={{ padding: 8 }}>
+        <input
+          value={r.start}
+          onChange={(e) => updateBatch(r.id, "start", e.target.value)}
+          style={{ width: 90, padding: 6 }}
+        />
+      </td>
 
-                      <td style={{ padding: 8 }}>
-                        <button onClick={() => adjustStartForTarget(r.id)}
-                                style={{ marginRight: 6, padding: "6px 10px", background: "#1f6feb", color: "#fff", border: 0, borderRadius: 6, cursor: "pointer" }}>
-                          ajustar início
-                        </button>
-                        <button onClick={() => adjustFermentForTarget(r.id)}
-                                style={{ marginRight: 6, padding: "6px 10px", background: "#22c55e", color: "#0b1020", border: 0, borderRadius: 6, cursor: "pointer" }}>
-                          ajustar %fermento
-                        </button>
-                        <button onClick={() => removeBatch(r.id)}
-                                style={{ padding: "6px 10px", background: "#2b3145", color: "#e6eef8", border: "1px solid #3a4566", borderRadius: 6, cursor: "pointer" }}>
-                          remover
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      <td style={{ padding: 8 }}>
+        <select
+          value={r.productKey}
+          onChange={(e) => updateBatch(r.id, "productKey", e.target.value)}
+          style={{ padding: 6 }}
+        >
+          <option value="">—</option>
+          {Object.keys(products).map((k) => (
+            <option key={k} value={k}>
+              {products[k].name}
+            </option>
+          ))}
+        </select>
+      </td>
+
+      <td style={{ padding: 8 }}>
+        <input
+          value={r.ferment_pct}
+          onChange={(e) => updateBatch(r.id, "ferment_pct", e.target.value)}
+          style={{ width: 60, padding: 6 }}
+        />
+      </td>
+
+      <td style={{ padding: 8, textAlign: "right" }}>{r.percent.toFixed(1)}%</td>
+      <td style={{ padding: 8, textAlign: "right" }}>{r.remaining_min}</td>
+      <td style={{ padding: 8, textAlign: "center" }}>{r.target_ready}</td>
+      <td style={{ padding: 8, textAlign: "center" }}>{r.predicted}</td>
+      <td style={{ padding: 8, textAlign: "center" }}>
+        {r.error_min == null
+          ? "_"
+          : r.error_min > 0
+          ? `+${r.error_min}`
+          : `${r.error_min}`}
+      </td>
+
+      {/* AÇÕES */}
+      <td style={{ padding: 8 }}>
+        <button
+          onClick={() => moveBatch(idx, -1)}
+          disabled={idx === 0}
+          style={{
+            marginRight: 6,
+            padding: "6px 10px",
+            background: "#2b3145",
+            color: "#e6eef8",
+            border: "1px solid #3a4566",
+            borderRadius: 6,
+            cursor: idx === 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          ↑
+        </button>
+
+        <button
+          onClick={() => moveBatch(idx, 1)}
+          disabled={idx === results.length - 1}
+          style={{
+            marginRight: 12,
+            padding: "6px 10px",
+            background: "#2b3145",
+            color: "#e6eef8",
+            border: "1px solid #3a4566",
+            borderRadius: 6,
+            cursor: idx === results.length - 1 ? "not-allowed" : "pointer",
+          }}
+        >
+          ↓
+        </button>
+
+        <button
+          onClick={() => adjustStartForTarget(r.id)}
+          style={{
+            marginRight: 6,
+            padding: "6px 10px",
+            background: "#1f6feb",
+            color: "#fff",
+            border: 0,
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          ajustar início
+        </button>
+
+        <button
+          onClick={() => adjustFermentForTarget(r.id)}
+          style={{
+            marginRight: 6,
+            padding: "6px 10px",
+            background: "#22c55e",
+            color: "#0b1020",
+            border: 0,
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          ajustar %fermento
+        </button>
+
+        <button
+          onClick={() => removeBatch(r.id)}
+          style={{
+            padding: "6px 10px",
+            background: "#2b3145",
+            color: "#e6eef8",
+            border: "1px solid #3a4566",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          remover
+        </button>
+      </td>
+    </tr>
+  ))}
+</tbody>
 
             <div style={{ height: 240, marginTop: 12 }}>
               <ResponsiveContainer>
