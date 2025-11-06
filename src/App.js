@@ -468,10 +468,18 @@ export default function App() {
         />
       </td>
 
-      <td style={{ padding: 8, textAlign: "right" }}>{r.percent.toFixed(1)}%</td>
-      <td style={{ padding: 8, textAlign: "right" }}>{r.remaining_min}</td>
-      <td style={{ padding: 8, textAlign: "center" }}>{r.target_ready}</td>
-      <td style={{ padding: 8, textAlign: "center" }}>{r.predicted}</td>
+      <td style={{ padding: 8, textAlign: "right" }}>
+  {Number.isFinite(r.percent) ? `${r.percent.toFixed(1)}%` : "100.0%"}
+</td>
+      <td style={{ padding: 8, textAlign: "right" }}>
+  {Number.isFinite(r.remaining_min) ? r.remaining_min : 0}
+</td>
+<td style={{ padding: 8, textAlign: "center" }}>
+  {r.target_ready ?? ""}
+</td>
+<td style={{ padding: 8, textAlign: "center" }}>
+  {r.predicted ?? ""}
+</td>
       <td style={{ padding: 8, textAlign: "center" }}>
         {r.error_min == null
           ? "_"
