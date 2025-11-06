@@ -561,7 +561,8 @@ export default function App() {
     </tr>
   ))}
 </tbody>
-
+</table>
+</div>
             <div style={{ height: 240, marginTop: 12 }}>
               <ResponsiveContainer>
                 <LineChart data={tempSeries}>
