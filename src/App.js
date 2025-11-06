@@ -532,21 +532,6 @@ export default function App() {
       {/* Ações (sem setas aqui) */}
       <td style={{ padding: 8 }}>
         <button
-          onClick={() => adjustStartForTarget(r.id)}
-          style={{
-            marginRight: 6,
-            padding: "6px 10px",
-            background: "#1f6feb",
-            color: "#fff",
-            border: 0,
-            borderRadius: 6,
-            cursor: "pointer",
-          }}
-        >
-          ajustar início
-        </button>
-
-        <button
           onClick={() => adjustFermentForTarget(r.id)}
           style={{
             marginRight: 6,
