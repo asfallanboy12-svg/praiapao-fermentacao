@@ -391,52 +391,65 @@ export default function App() {
             <div style={{ overflowX: "auto", marginTop: 8 }}>
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
-                  <tr style={{ background: "#121a2d" }}>
-                    <th style={{ padding: 8, textAlign: "left" }}>Nome</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Início</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Produto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>% Fermento</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>%</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Restante (min)</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Alvo pronto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Previsto</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Erro (min)</th>
-                    <th style={{ padding: 8, textAlign: "left" }}>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-          {results.map((r, idx) => (
-  <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
-    <td style={{ padding: 8, textAlign: "center" }}>
-      <button
-        onClick={() => moveBatch(idx, -1)}
-        style={{
-          marginRight: 4,
-          padding: "4px 8px",
-          background: "#1f6feb",
-          color: "#fff",
-          border: 0,
-          borderRadius: 4,
-          cursor: "pointer",
-        }}
-      >
-        ↑
-      </button>
-      <button
-        onClick={() => moveBatch(idx, 1)}
-        style={{
-          padding: "4px 8px",
-          background: "#1f6feb",
-          color: "#fff",
-          border: 0,
-          borderRadius: 4,
-          cursor: "pointer",
-        }}
-      >
-        ↓
-      </button>
-    </td>
+  <tr>
+    <th style={{ padding: 8, textAlign: "left" }}>{/* setas */}</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Nome</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Início</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Produto</th>
+    <th style={{ padding: 8, textAlign: "left" }}>% Fermento</th>
+    {/* removido: % */}
+    {/* removido: Restante (min) */}
+    <th style={{ padding: 8, textAlign: "left" }}>Alvo pronto</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Previsto</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Erro (min)</th>
+    <th style={{ padding: 8, textAlign: "left" }}>Ações</th>
+  </tr>
+</thead>
 
+               <tbody>
+  {results.map((r, idx) => (
+    <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
+      {/* Setas (somente aqui!) */}
+      <td style={{ padding: 8, textAlign: "center" }}>
+        <button
+          onClick={() => moveBatch(idx, -1)}
+          style={{
+            marginRight: 4,
+            padding: "4px 8px",
+            background: "#1f6feb",
+            color: "#fff",
+            border: 0,
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          ↑
+        </button>
+        <button
+          onClick={() => moveBatch(idx, 1)}
+          style={{
+            padding: "4px 8px",
+            background: "#1f6feb",
+            color: "#fff",
+            border: 0,
+            borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >
+          ↓
+        </button>
+      </td>
+
+      {/* Nome */}
+      <td style={{ padding: 8 }}>
+        <input
+          value={r.name}
+          onChange={(e) => updateBatch(r.id, "name", e.target.value)}
+          style={{ width: 140, padding: 6 }}
+        />
+      </td>
+
+      {/* Início */}
       <td style={{ padding: 8 }}>
         <input
           value={r.start}
@@ -445,6 +458,7 @@ export default function App() {
         />
       </td>
 
+      {/* Produto */}
       <td style={{ padding: 8 }}>
         <select
           value={r.productKey}
@@ -460,6 +474,7 @@ export default function App() {
         </select>
       </td>
 
+      {/* % Fermento */}
       <td style={{ padding: 8 }}>
         <input
           value={r.ferment_pct}
@@ -468,60 +483,31 @@ export default function App() {
         />
       </td>
 
-      <td style={{ padding: 8, textAlign: "right" }}>
-  {Number.isFinite(r.percent) ? `${r.percent.toFixed(1)}%` : "100.0%"}
-</td>
-      <td style={{ padding: 8, textAlign: "right" }}>
-  {Number.isFinite(r.remaining_min) ? r.remaining_min : 0}
-</td>
-<td style={{ padding: 8, textAlign: "center" }}>
-  {r.target_ready ?? ""}
-</td>
-<td style={{ padding: 8, textAlign: "center" }}>
-  {r.predicted ?? ""}
-</td>
+      {/* REMOVIDO: coluna % (percent) */}
+      {/* REMOVIDO: coluna Restante (min) */}
+
+      {/* Alvo pronto (input) */}
       <td style={{ padding: 8, textAlign: "center" }}>
-        {r.error_min == null
-          ? "_"
-          : r.error_min > 0
-          ? `+${r.error_min}`
-          : `${r.error_min}`}
+        <input
+          value={r.target_ready ?? ""}
+          placeholder="HH:MM"
+          onChange={(e) => updateBatch(r.id, "target_ready", e.target.value)}
+          style={{ width: 90, padding: 6 }}
+        />
       </td>
 
-      {/* AÇÕES */}
+      {/* Previsto (só exibe; protegido contra undefined) */}
+      <td style={{ padding: 8, textAlign: "center" }}>
+        {r.predicted ?? ""}
+      </td>
+
+      {/* Erro (min) */}
+      <td style={{ padding: 8, textAlign: "center" }}>
+        {r.error_min == null ? "_" : r.error_min > 0 ? `+${r.error_min}` : `${r.error_min}`}
+      </td>
+
+      {/* Ações (sem setas aqui) */}
       <td style={{ padding: 8 }}>
-        <button
-          onClick={() => moveBatch(idx, -1)}
-          disabled={idx === 0}
-          style={{
-            marginRight: 6,
-            padding: "6px 10px",
-            background: "#2b3145",
-            color: "#e6eef8",
-            border: "1px solid #3a4566",
-            borderRadius: 6,
-            cursor: idx === 0 ? "not-allowed" : "pointer",
-          }}
-        >
-          ↑
-        </button>
-
-        <button
-          onClick={() => moveBatch(idx, 1)}
-          disabled={idx === results.length - 1}
-          style={{
-            marginRight: 12,
-            padding: "6px 10px",
-            background: "#2b3145",
-            color: "#e6eef8",
-            border: "1px solid #3a4566",
-            borderRadius: 6,
-            cursor: idx === results.length - 1 ? "not-allowed" : "pointer",
-          }}
-        >
-          ↓
-        </button>
-
         <button
           onClick={() => adjustStartForTarget(r.id)}
           style={{
