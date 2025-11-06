@@ -405,15 +405,37 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-  {results.map((r, idx) => (
-    <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
-      <td style={{ padding: 8 }}>
-        <input
-          value={r.name}
-          onChange={(e) => updateBatch(r.id, "name", e.target.value)}
-          style={{ width: 140, padding: 6 }}
-        />
-      </td>
+          {results.map((r, idx) => (
+  <tr key={r.id} style={{ borderBottom: "1px solid #1a2340" }}>
+    <td style={{ padding: 8, textAlign: "center" }}>
+      <button
+        onClick={() => moveBatch(idx, -1)}
+        style={{
+          marginRight: 4,
+          padding: "4px 8px",
+          background: "#1f6feb",
+          color: "#fff",
+          border: 0,
+          borderRadius: 4,
+          cursor: "pointer",
+        }}
+      >
+        ↑
+      </button>
+      <button
+        onClick={() => moveBatch(idx, 1)}
+        style={{
+          padding: "4px 8px",
+          background: "#1f6feb",
+          color: "#fff",
+          border: 0,
+          borderRadius: 4,
+          cursor: "pointer",
+        }}
+      >
+        ↓
+      </button>
+    </td>
 
       <td style={{ padding: 8 }}>
         <input
