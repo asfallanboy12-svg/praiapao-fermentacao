@@ -207,23 +207,46 @@ export default function App() {
     }
 
     for (const b of out) {
-      const ideal = Number(b._p?.ideal_ref_min ?? 60);
-      const corr  = Number(b._p?.corr ?? 1.0);
-      const effectiveIdeal = ideal * corr;
+  const ideal = Number(b._p?.ideal_ref_min ?? 60);
+  const corr  = Number(b._p?.corr ?? 1.0);
+  const effectiveIdeal = ideal * corr;
 
-      b.pct = Math.min(100, (b.accumulated_eq_min / effectiveIdeal) * 100);
-      b.estimated_time_remaining_min = Math.max(0, Math.round(effectiveIdeal - b.accumulated_eq_min));
-      b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
+  // % e restante (mantém seus campos e também preenche os usados na tabela)
+  b.pct = Math.min(100, (b.accumulated_eq_min / effectiveIdeal) * 100);
+  b.estimated_time_remaining_min = Math.max(0, Math.round(effectiveIdeal - b.accumulated_eq_min));
+  b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
 
-      // previsão e erro vs alvo
-      b.predicted_finish_min = findFinishTime(timeToMinutes(b.start), tempSeries, b._p, b.ferment_pct, intervalMin);
-      if (typeof b.target_ready === "string" && b.target_ready.includes(":")) {
-        const tTarget = timeToMinutes(b.target_ready);
-        b.error_min = (b.predicted_finish_min == null) ? null : (b.predicted_finish_min - tTarget);
-      } else {
-        b.error_min = null;
-      }
-    }
+  // >>> Campos usados pela tabela:
+  b.percent = Number.isFinite(b.pct) ? b.pct : 100;
+  b.remaining_min = Number.isFinite(b.estimated_time_remaining_min)
+    ? Math.round(b.estimated_time_remaining_min)
+    : 0;
+
+  // previsão (minuto absoluto em “minutos do dia”)
+  b.predicted_finish_min = findFinishTime(
+    timeToMinutes(b.start),
+    tempSeries,
+    b._p,
+    b.ferment_pct,
+    intervalMin
+  );
+
+  // string HH:MM para a coluna "Previsto"
+  b.predicted = (b.predicted_finish_min != null)
+    ? minutesToTime(b.predicted_finish_min)
+    : "";
+
+  // erro vs alvo (em minutos)
+  if (typeof b.target_ready === "string" && b.target_ready.includes(":")) {
+    const tTarget = timeToMinutes(b.target_ready);
+    b.error_min = (b.predicted_finish_min == null || !Number.isFinite(tTarget))
+      ? null
+      : (b.predicted_finish_min - tTarget);
+  } else {
+    b.error_min = null;
+  }
+}
+
     return out;
   }, [batches, tempSeries, simEndTime, intervalMin, products]);
 
