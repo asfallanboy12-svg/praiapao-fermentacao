@@ -26,6 +26,48 @@ const minutesToTime = (m) => {
   const mm = Math.floor(m % 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
+// =====================================
+// Extras p/ trabalhar após a meia-noite
+// =====================================
+const MIN_PER_DAY = 1440;
+
+/**
+ * Converte "HH:MM" em minutos, garantindo que o resultado fique
+ * APÓS uma referência (refMin). Se "HH:MM" ficar antes de refMin,
+ * soma +24h até ultrapassar refMin.
+ *
+ * Ex.: ref=23:00 (1380)
+ *  - "01:30" => 90  -> +1440 => 1530 (dia seguinte, 01:30 D+1)
+ *  - "23:15" => 1395 (mesmo dia)
+ */
+function timeToMinutesAfter(hhmm, refMin) {
+  if (typeof hhmm !== "string" || !hhmm.includes(":")) return NaN;
+  const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return NaN;
+  let x = h * 60 + m;
+  if (!Number.isFinite(refMin)) return x;
+  while (x < refMin) x += MIN_PER_DAY;
+  return x;
+}
+
+/**
+ * Formata um minuto absoluto em "HH:MM", adicionando " (D+N)" se
+ * houver virada de dia em relação à refMin.
+ *
+ * Ex.: ref = 23:00 (1380)
+ *  - min = 1530 -> "01:30 (D+1)"
+ *  - min = 1395 -> "23:15"
+ */
+function minutesToTimeWithDay(min, refMin) {
+  if (!Number.isFinite(min)) return "";
+  const dayOffset = Number.isFinite(refMin)
+    ? Math.floor((min - refMin) / MIN_PER_DAY)
+    : 0;
+  const base = ((min % MIN_PER_DAY) + MIN_PER_DAY) % MIN_PER_DAY;
+  const hh = String(Math.floor(base / 60)).padStart(2, "0");
+  const mm = String(base % 60).padStart(2, "0");
+  return dayOffset > 0 ? `${hh}:${mm} (D+${dayOffset})` : `${hh}:${mm}`;
+};
 
 // aceita "3,6" ou "3.6" e também números normais
 const toNumber = (v) => {
@@ -189,66 +231,68 @@ export default function App() {
     [tempSchedule, simEndTime, intervalMin]
   );
 
-  const results = useMemo(() => {
-    const out = batches.map((b) => {
-      const p = products[b.productKey] || {};
-      return { ...b, accumulated_eq_min: 0, _p: p };
-    });
+ const results = useMemo(() => {
+  const out = batches.map((b) => {
+    const p = products[b.productKey] || {};
+    return { ...b, accumulated_eq_min: 0, _p: p };
+  });
 
-    for (const seg of tempSeries) {
-      for (const b of out) {
-        const startMin = timeToMinutes(b.start);
-        if (seg.tmin >= startMin && seg.tmin < timeToMinutes(simEndTime)) {
-          const rate = stepRate(seg.temp, b.ferment_pct, b._p);
-          const eq = intervalMin * rate;
-          b.accumulated_eq_min += eq;
-        }
+  // Acumula minutos equivalentes
+  for (const seg of tempSeries) {
+    for (const b of out) {
+      const startMin = timeToMinutes(b.start);
+      if (seg.tmin >= startMin && seg.tmin < timeToMinutes(simEndTime)) {
+        const rate = stepRate(seg.temp, b.ferment_pct, b._p);
+        const eq = intervalMin * rate;
+        b.accumulated_eq_min += eq;
       }
     }
-
-    for (const b of out) {
-  const ideal = Number(b._p?.ideal_ref_min ?? 60);
-  const corr  = Number(b._p?.corr ?? 1.0);
-  const effectiveIdeal = ideal * corr;
-
-  // % e restante (mantém seus campos e também preenche os usados na tabela)
-  b.pct = Math.min(100, (b.accumulated_eq_min / effectiveIdeal) * 100);
-  b.estimated_time_remaining_min = Math.max(0, Math.round(effectiveIdeal - b.accumulated_eq_min));
-  b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
-
-  // >>> Campos usados pela tabela:
-  b.percent = Number.isFinite(b.pct) ? b.pct : 100;
-  b.remaining_min = Number.isFinite(b.estimated_time_remaining_min)
-    ? Math.round(b.estimated_time_remaining_min)
-    : 0;
-
-  // previsão (minuto absoluto em “minutos do dia”)
-  b.predicted_finish_min = findFinishTime(
-    timeToMinutes(b.start),
-    tempSeries,
-    b._p,
-    b.ferment_pct,
-    intervalMin
-  );
-
-  // string HH:MM para a coluna "Previsto"
-  b.predicted = (b.predicted_finish_min != null)
-    ? minutesToTime(b.predicted_finish_min)
-    : "";
-
-  // erro vs alvo (em minutos)
-  if (typeof b.target_ready === "string" && b.target_ready.includes(":")) {
-    const tTarget = timeToMinutes(b.target_ready);
-    b.error_min = (b.predicted_finish_min == null || !Number.isFinite(tTarget))
-      ? null
-      : (b.predicted_finish_min - tTarget);
-  } else {
-    b.error_min = null;
   }
-}
 
-    return out;
-  }, [batches, tempSeries, simEndTime, intervalMin, products]);
+  // Cálculos finais
+  for (const b of out) {
+    const ideal = Number(b._p.ideal_ref_min ?? 60);
+    const corr = Number(b._p.corr ?? 1.0);
+    const effectiveIdeal = ideal * corr;
+
+    // porcentagem de fermentação
+    b.pct = Math.min(100, (b.accumulated_eq_min / effectiveIdeal) * 100);
+    b.accumulated_eq_min = Math.round(b.accumulated_eq_min * 10) / 10;
+
+    // cálculo do restante
+    b.estimated_time_remaining_min = Math.max(
+      0,
+      Math.round(effectiveIdeal - b.accumulated_eq_min)
+    );
+
+    // previsão de término (em minutos absolutos)
+    b.predicted_finish_min = findFinishTime(
+      timeToMinutes(b.start),
+      tempSeries,
+      b._p,
+      b.ferment_pct,
+      intervalMin
+    );
+
+    // ======== NOVA LÓGICA PARA FUNCIONAR APÓS A MEIA-NOITE ========
+    const startMinAbs = timeToMinutes(b.start);
+    const targetAbs = timeToMinutesAfter(b.target_ready, startMinAbs);
+
+    // Exibir horário previsto com dia (D+1, D+2 etc)
+    b.predicted = minutesToTimeWithDay(b.predicted_finish_min, startMinAbs);
+
+    // Calcular erro (em minutos)
+    if (Number.isFinite(targetAbs) && b.predicted_finish_min != null) {
+      b.error_min = b.predicted_finish_min - targetAbs;
+    } else {
+      b.error_min = null;
+    }
+    // ==============================================================
+  }
+
+  return out;
+}, [batches, tempSeries, simEndTime, intervalMin, products]);
+
 
   /** ---- Handlers: Cronograma ---- **/
   const addTempPoint = () => {
